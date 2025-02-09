@@ -225,7 +225,12 @@ class AsyncOpenAISimpleAgent(BaseAgent):
                 "chat_id": self.chat_id,
                 "agent_name": self.agent_name
             })
-            raise e
+            # raise e
+            return {
+                "tool_call_id": tool_call.id,
+                "name": tool_call.function.name,
+                "result": str(e)
+            }
 
     def _prepare_messages(self, message: str, history: Optional[list] = None) -> List[Dict[str, str]]:
         """Prepare messages for OpenAI API"""
