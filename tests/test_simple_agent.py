@@ -2,18 +2,17 @@ import asyncio
 import json
 from datetime import datetime
 import os
+import time
 
 from AsyncAgentic.Agents import AsyncOpenAISimpleAgent
 # hahaha officially this is working fine
 
 
 async def get_current_time(user_id: str, chat_id: str, agent_name: str) -> str:
-    """Get the current time"""
     print(f"get_current_time called by {agent_name} for user {user_id} and chat {chat_id}")
     return datetime.now().strftime("%H:%M:%S")
 
 async def get_weather(city: str, user_id: str, chat_id: str, agent_name: str) -> str:
-    """Simulate getting weather"""
     print(f"get_weather called by {agent_name} for user {user_id} and chat {chat_id}")
     await asyncio.sleep(1)
     return f"Sunny, 22°C in {city}"
@@ -48,7 +47,9 @@ async def main():
         agent_name="Test_Agent",
         agent_description="Test agent for weather and time",
         model="gpt-4o-mini",
+        # model="llama3-groq-tool-use",
         api_key=os.getenv("OPENAI_API_KEY"),
+        # base_url="http://localhost:11434/v1",
         user_id="test_user",
         chat_id="test_chat",
         tool_registry=[
@@ -66,7 +67,7 @@ async def main():
         execute_function_concurrently=True,
         system_prompt="You are a helpful assistant that can check time and weather"
     )
-
+    start_time = time.perf_counter()
     print("\nTesting single tool call...")
     response = await agent.send_message(
         "What time is it?",
@@ -88,6 +89,8 @@ async def main():
         debug_print=True
     )
     print(json.dumps(response, indent=2))
+    end_time = time.perf_counter()
+    print(f"Total time taken: {end_time - start_time} seconds")
 
 if __name__ == "__main__":
     asyncio.run(main()) 
