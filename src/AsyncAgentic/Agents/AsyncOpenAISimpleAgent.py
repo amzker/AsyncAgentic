@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime
 import json
 from termcolor import colored
+import tiktoken
 from AsyncAgentic.Agents.BaseAgent import BaseAgent
 
 class AsyncOpenAISimpleAgent(BaseAgent):
@@ -15,6 +16,12 @@ class AsyncOpenAISimpleAgent(BaseAgent):
         tool_registry: Optional[List[Dict[str, Any]]] = None,
         execute_function_concurrently: bool = True,
         debug_print: bool = False,
+        context_handling_method: str = "Accurate",
+        max_context_length: int = 100000,
+        max_token_per_message: int = 5000,
+        max_messages_in_context: int = 20,
+        prompt_when_context_overflow: str = "Context is full, there for response is cut short , use whatever context is avalible and only responed whatever is left , do not extraplorate or assume the next context , rather explain user that query is broad and it will be helpful to do specific query",
+        prompt_when_message_is_dropped: str = "Previous messages are dropped because of context overflow",
         **kwargs
     ):
         super().__init__(
@@ -22,6 +29,10 @@ class AsyncOpenAISimpleAgent(BaseAgent):
             agent_description=agent_description,
             model=model,
             api_key=api_key,
+            context_handling_method=context_handling_method,
+            max_context_length=max_context_length,
+            max_token_per_message=max_token_per_message,
+            max_messages_in_context=max_messages_in_context,
             **kwargs
         )
         self.tool_registry = tool_registry or []
@@ -29,6 +40,89 @@ class AsyncOpenAISimpleAgent(BaseAgent):
         self._tool_map = {tool["name"]: tool for tool in self.tool_registry}
         self._message_history = []  # Track complete conversation
         self.debug_print = debug_print
+        self.prompt_when_context_overflow = prompt_when_context_overflow
+        self.prompt_when_message_is_dropped = prompt_when_message_is_dropped
+
+    def _truncate_tokens(self, text: str, max_tokens: int) -> str:
+        """Truncate text to max_tokens based on context handling method"""
+        if self.context_handling_method.lower() == "accurate":
+            try:
+                encoding = tiktoken.encoding_for_model(self.model)
+            except KeyError:
+                encoding = tiktoken.get_encoding("gpt-4o")
+            tokens = encoding.encode(text)
+            if len(tokens) <= max_tokens:
+                return text
+            print(f"Truncating text from {len(tokens)} to {max_tokens} tokens")
+            truncated = encoding.decode(tokens[:max_tokens])
+            return truncated + "\n[Context trimmed due to token limit]"
+        else:
+            # Simple method: 1 token = 4 characters
+            if len(text) <= max_tokens * 4:
+                return text
+            print(f"Truncating text from {len(text)} to {max_tokens * 4} characters")
+            return text[:max_tokens * 4] + "\n[Context trimmed due to token limit]"
+
+    def _get_total_context_tokens(self, messages: List[Dict[str, str]]) -> int:
+        """Get total token count for all messages"""
+        if self.context_handling_method.lower() == "accurate":
+            try:
+                encoding = tiktoken.encoding_for_model(self.model)
+            except KeyError:
+                encoding = tiktoken.get_encoding("gpt-4")
+            return sum(len(encoding.encode(msg["content"])) for msg in messages if msg.get("content"))
+        else:
+            return sum(len(msg["content"]) // 4 for msg in messages if msg.get("content"))
+
+    def _trim_context(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Trim context to fit within max_context_length"""
+        # First trim individual messages
+        trimmed_messages = []
+        for msg in messages:
+            if msg.get("content"):
+                trimmed_content = self._truncate_tokens(msg["content"], self.max_token_per_message)
+                trimmed_messages.append({**msg, "content": trimmed_content})
+            else:
+                trimmed_messages.append(msg)
+
+        # If still over limit, start dropping oldest messages
+        while self._get_total_context_tokens(trimmed_messages) > self.max_context_length:
+            if len(trimmed_messages) <= 1:  # Keep at least one message
+                break
+            if self.debug_print:
+                print(colored("Dropping oldest message due to context overflow", 'red'))
+            trimmed_messages.pop(1)  # Keep system message, drop oldest user/assistant message
+
+        # Add context overflow prompt if needed
+        if len(trimmed_messages) < len(messages):
+            trimmed_messages.insert(1, {
+                "role": "system",
+                "content": self.prompt_when_message_is_dropped
+            })
+
+        return trimmed_messages
+
+    def _prepare_messages(self, message: str, history: Optional[list] = None) -> List[Dict[str, str]]:
+        """Prepare messages for OpenAI API with context handling"""
+        messages = []
+        
+        if not history or history[0]["role"] != "system":
+            messages.append({"role": "system", "content": self.system_prompt})
+        
+        if history:
+            messages.extend(history)
+        
+        if not history or history[-1]["content"] != message:
+            messages.append({"role": "user", "content": message})
+        
+        # Apply context handling
+        messages = self._trim_context(messages)
+        
+        if self.debug_print:
+            total_tokens = self._get_total_context_tokens(messages)
+            print(colored(f"Total context tokens: {total_tokens}/{self.max_context_length}", 'cyan'))
+        
+        return messages
 
     async def send_message(
         self,
@@ -231,21 +325,6 @@ class AsyncOpenAISimpleAgent(BaseAgent):
                 "name": tool_call.function.name,
                 "result": str(e)
             }
-
-    def _prepare_messages(self, message: str, history: Optional[list] = None) -> List[Dict[str, str]]:
-        """Prepare messages for OpenAI API"""
-        messages = []
-        
-        if not history or history[0]["role"] != "system":
-            messages.append({"role": "system", "content": self.system_prompt})
-        
-        if history:
-            messages.extend(history)
-        
-        if not history or history[-1]["content"] != message:
-            messages.append({"role": "user", "content": message})
-        
-        return messages
 
     def _format_tool_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Format tool results for OpenAI API"""

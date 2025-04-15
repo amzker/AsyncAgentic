@@ -49,6 +49,7 @@ async def main():
         model="gpt-4o-mini",
         # model="llama3-groq-tool-use",
         api_key=os.getenv("OPENAI_API_KEY"),
+        context_handling_method="simple",
         # base_url="http://localhost:11434/v1",
         user_id="test_user",
         chat_id="test_chat",
@@ -69,28 +70,30 @@ async def main():
     )
     start_time = time.perf_counter()
     print("\nTesting single tool call...")
+    msg = "What's the time and weather in Tokyo and London? i am testing the concurrent execution of tools. execute both tools at same time." * 5000
     response = await agent.send_message(
-        "What time is it?",
+        message=msg,
         debug_print=True
     )
-    print(json.dumps(response, indent=2))
+    with open("response.json", "w") as f:
+        json.dump(response, f, indent=2)
 
-    print("\nTesting multiple tool calls...")
-    response = await agent.send_message(
-        "What's the time and weather in Tokyo and London? i am testing the concurrent execution of tools. execute both tools at same time.",
-        debug_print=True
-    )
-    print(json.dumps(response, indent=2))
+    # print("\nTesting multiple tool calls...")
+    # response = await agent.send_message(
+    #     "What's the time and weather in Tokyo and London? i am testing the concurrent execution of tools. execute both tools at same time.",
+    #     debug_print=True
+    # )
+    # print(json.dumps(response, indent=2))
 
-    print("\nTesting conversation with history...")
-    response = await agent.send_message(
-        "And what about New York?",
-        history=response["history"]["simplified"],
-        debug_print=True
-    )
-    print(json.dumps(response, indent=2))
-    end_time = time.perf_counter()
-    print(f"Total time taken: {end_time - start_time} seconds")
+    # print("\nTesting conversation with history...")
+    # response = await agent.send_message(
+    #     "And what about New York?",
+    #     history=response["history"]["simplified"],
+    #     debug_print=True
+    # )
+    # print(json.dumps(response, indent=2))
+    # end_time = time.perf_counter()
+    # print(f"Total time taken: {end_time - start_time} seconds")
 
 if __name__ == "__main__":
     asyncio.run(main()) 
