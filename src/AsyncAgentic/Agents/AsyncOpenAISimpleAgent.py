@@ -1,4 +1,4 @@
-from typing import Optional, Any, List, Dict
+from typing import Callable, Optional, Any, List, Dict
 import asyncio
 from datetime import datetime
 import json
@@ -16,12 +16,15 @@ class AsyncOpenAISimpleAgent(BaseAgent):
         tool_registry: Optional[List[Dict[str, Any]]] = None,
         execute_function_concurrently: bool = True,
         debug_print: bool = False,
-        context_handling_method: str = "Accurate",
+        context_handling_method: str = "simple", # accurate or simple
         max_context_length: int = 100000,
         max_token_per_message: int = 5000,
         max_messages_in_context: int = 20,
         prompt_when_context_overflow: str = "Context is full, there for response is cut short , use whatever context is avalible and only responed whatever is left , do not extraplorate or assume the next context , rather explain user that query is broad and it will be helpful to do specific query",
         prompt_when_message_is_dropped: str = "Previous messages are dropped because of context overflow",
+        manual_stop_signal_function : Optional[Callable[[Any, Any], bool]] = None,
+        check_for_stop_signal_time: int = 3,
+        hooks: Optional[Dict[str, Callable]] = None,
         **kwargs
     ):
         super().__init__(
@@ -33,6 +36,9 @@ class AsyncOpenAISimpleAgent(BaseAgent):
             max_context_length=max_context_length,
             max_token_per_message=max_token_per_message,
             max_messages_in_context=max_messages_in_context,
+            manual_stop_signal_function=manual_stop_signal_function,
+            check_for_stop_signal_time=check_for_stop_signal_time,
+            hooks=hooks,
             **kwargs
         )
         self.tool_registry = tool_registry or []
@@ -47,6 +53,7 @@ class AsyncOpenAISimpleAgent(BaseAgent):
         """Truncate text to max_tokens based on context handling method"""
         if self.context_handling_method.lower() == "accurate":
             try:
+                # TODO: I SHOULD PROABALY SWITCH TO THREADS HERE. OR KEEP SIMPLE CONTEXT HANDLING ONLY.
                 encoding = tiktoken.encoding_for_model(self.model)
             except KeyError:
                 encoding = tiktoken.get_encoding("gpt-4o")
@@ -75,30 +82,33 @@ class AsyncOpenAISimpleAgent(BaseAgent):
             return sum(len(msg["content"]) // 4 for msg in messages if msg.get("content"))
 
     def _trim_context(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Trim context to fit within max_context_length"""
-        # First trim individual messages
         trimmed_messages = []
+        was_trimmed = False
         for msg in messages:
             if msg.get("content"):
                 trimmed_content = self._truncate_tokens(msg["content"], self.max_token_per_message)
+                if trimmed_content != msg["content"]:
+                    was_trimmed = True
                 trimmed_messages.append({**msg, "content": trimmed_content})
             else:
                 trimmed_messages.append(msg)
 
-        # If still over limit, start dropping oldest messages
+        messages_dropped = False
         while self._get_total_context_tokens(trimmed_messages) > self.max_context_length:
-            if len(trimmed_messages) <= 1:  # Keep at least one message
+            if len(trimmed_messages) <= 1: 
                 break
             if self.debug_print:
                 print(colored("Dropping oldest message due to context overflow", 'red'))
-            trimmed_messages.pop(1)  # Keep system message, drop oldest user/assistant message
+            trimmed_messages.pop(1)  # keep system message, drop oldest user/assistant message
+            messages_dropped = True
 
-        # Add context overflow prompt if needed
-        if len(trimmed_messages) < len(messages):
-            trimmed_messages.insert(1, {
-                "role": "system",
-                "content": self.prompt_when_message_is_dropped
-            })
+        # If any trimming happened, add context overflow prompt to the last message
+        if was_trimmed or messages_dropped:
+            last_msg = trimmed_messages[-1]
+            overflow_note = "\n\n" + self.prompt_when_context_overflow
+            if messages_dropped:
+                overflow_note = "\n\n" + self.prompt_when_message_is_dropped + overflow_note
+            trimmed_messages[-1] = {**last_msg, "content": last_msg["content"] + overflow_note}
 
         return trimmed_messages
 
